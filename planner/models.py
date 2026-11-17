@@ -9,7 +9,7 @@ from datetime import date
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 
 class EventType(str, Enum):
@@ -72,3 +72,10 @@ class Event(BaseModel):
         if 0 <= weight <= 100:
             return weight
         return None
+
+
+def first_problem(error: ValidationError) -> str:
+    """Describe the first thing wrong with an Event, e.g. 'title: String should ...'."""
+    problem = error.errors()[0]
+    field_name = ".".join(str(part) for part in problem["loc"])
+    return f"{field_name}: {problem['msg']}"

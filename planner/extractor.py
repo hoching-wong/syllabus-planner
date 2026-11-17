@@ -11,7 +11,7 @@ from datetime import date
 from pydantic import ValidationError
 
 from planner.llm import call_llm
-from planner.models import Event
+from planner.models import Event, first_problem
 
 
 class ExtractionError(Exception):
@@ -79,13 +79,6 @@ def _parse_items(reply: str) -> list:
     return data
 
 
-def _first_problem(error: ValidationError) -> str:
-    """Describe the first thing wrong with an item, e.g. 'title: String should ...'."""
-    problem = error.errors()[0]
-    field_name = ".".join(str(part) for part in problem["loc"])
-    return f"{field_name}: {problem['msg']}"
-
-
 def extract_events(text: str, course: str, default_year: int | None = None) -> ExtractionResult:
     """Find the events in one syllabus. `course` comes from the caller (the UI),
     not from the model, because that is more reliable than asking it to guess."""
@@ -104,5 +97,5 @@ def extract_events(text: str, course: str, default_year: int | None = None) -> E
             # Putting course last means it overrides any "course" the model sent.
             result.events.append(Event(**{**item, "course": course}))
         except ValidationError as error:
-            result.skipped.append(f"Item {number} skipped: {_first_problem(error)}")
+            result.skipped.append(f"Item {number} skipped: {first_problem(error)}")
     return result
