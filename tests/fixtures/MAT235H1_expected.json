@@ -1,0 +1,18 @@
+{
+  "_comment": "Hand-labelled answer key for MAT235H1_Syllabus.pdf (Fall 2026). Quiz dates are only known to the week, so they use due_week_of (the Monday); any date in that Monday-Sunday week counts. Quiz weight 2.5 (best 6 of 8 = 15%) or null are both acceptable.",
+  "course": "MAT235H1",
+  "default_year": 2026,
+  "events": [
+    {"label": "Term Test 1", "type": "exam", "due_date": "2026-10-19", "weight_percent": [22.5]},
+    {"label": "Term Test 2", "type": "exam", "due_date": "2026-11-27", "weight_percent": [22.5]},
+    {"label": "Final Exam", "type": "exam", "due_date": null, "weight_percent": [40]},
+    {"label": "Quiz 1", "type": "quiz", "due_week_of": "2026-09-14", "weight_percent": [2.5, null]},
+    {"label": "Quiz 2", "type": "quiz", "due_week_of": "2026-09-21", "weight_percent": [2.5, null]},
+    {"label": "Quiz 3", "type": "quiz", "due_week_of": "2026-09-28", "weight_percent": [2.5, null]},
+    {"label": "Quiz 4", "type": "quiz", "due_week_of": "2026-10-05", "weight_percent": [2.5, null]},
+    {"label": "Quiz 5", "type": "quiz", "due_week_of": "2026-11-02", "weight_percent": [2.5, null]},
+    {"label": "Quiz 6", "type": "quiz", "due_week_of": "2026-11-09", "weight_percent": [2.5, null]},
+    {"label": "Quiz 7", "type": "quiz", "due_week_of": "2026-11-16", "weight_percent": [2.5, null]},
+    {"label": "Quiz 8", "type": "quiz", "due_week_of": "2026-11-30", "weight_percent": [2.5, null]}
+  ]
+}

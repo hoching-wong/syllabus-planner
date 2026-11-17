@@ -20,6 +20,8 @@ def isolated_llm(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "_last_call_time", None)
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    # Fallback off by default so each test sees one model; fallback tests turn it on.
+    monkeypatch.setenv("GEMINI_FALLBACK_MODEL", "")
     sleeps: list[float] = []
     monkeypatch.setattr(llm.time, "sleep", sleeps.append)
     return sleeps
@@ -27,12 +29,12 @@ def isolated_llm(tmp_path, monkeypatch):
 
 def fake_send(monkeypatch, outcomes: list):
     """Replace _send_request. Each call uses the next outcome: an Exception is
-    raised, anything else is returned. Returns the list of prompts it received."""
+    raised, anything else is returned. Returns the model name of every call made."""
     calls: list[str] = []
     remaining = list(outcomes)
 
-    def send(prompt: str) -> str:
-        calls.append(prompt)
+    def send(prompt: str, model: str) -> str:
+        calls.append(model)
         outcome = remaining.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
@@ -123,6 +125,68 @@ def test_failed_call_is_not_cached(monkeypatch):
     with pytest.raises(llm.LLMError):
         llm.call_llm("prompt")
     assert not llm.CACHE_DIR.exists() or not list(llm.CACHE_DIR.iterdir())
+
+
+# --- fallback model ---
+
+
+@pytest.fixture
+def two_models(monkeypatch):
+    monkeypatch.setenv("GEMINI_MODEL", "main-model")
+    monkeypatch.setenv("GEMINI_FALLBACK_MODEL", "backup-model")
+
+
+def test_falls_back_when_main_model_stays_unavailable(monkeypatch, two_models):
+    outcomes = [FakeApiError(503)] * llm.MAX_ATTEMPTS + ["backup reply"]
+    calls = fake_send(monkeypatch, outcomes)
+    assert llm.call_llm("prompt") == "backup reply"
+    # The main model got every retry first; only then was the backup used.
+    assert calls == ["main-model"] * llm.MAX_ATTEMPTS + ["backup-model"]
+
+
+def test_main_model_is_used_when_it_works(monkeypatch, two_models):
+    calls = fake_send(monkeypatch, ["main reply"])
+    assert llm.call_llm("prompt") == "main reply"
+    assert calls == ["main-model"]
+
+
+def test_fallback_reply_is_cached_and_reused(monkeypatch, two_models):
+    calls = fake_send(monkeypatch, [FakeApiError(503)] * llm.MAX_ATTEMPTS + ["backup reply"])
+    llm.call_llm("prompt")
+    calls_so_far = len(calls)
+    assert llm.call_llm("prompt") == "backup reply"  # no new API calls, no waiting
+    assert len(calls) == calls_so_far
+
+
+def test_raises_when_both_models_are_unavailable(monkeypatch, two_models):
+    calls = fake_send(monkeypatch, [FakeApiError(503)] * (2 * llm.MAX_ATTEMPTS))
+    with pytest.raises(llm.LLMUnavailableError, match="backup-model"):
+        llm.call_llm("prompt")
+    assert len(calls) == 2 * llm.MAX_ATTEMPTS
+
+
+def test_non_retryable_error_does_not_trigger_the_fallback(monkeypatch, two_models):
+    calls = fake_send(monkeypatch, [FakeApiError(400), "never reached"])
+    with pytest.raises(llm.LLMError) as caught:
+        llm.call_llm("prompt")
+    assert not isinstance(caught.value, llm.LLMUnavailableError)
+    assert calls == ["main-model"]  # switching models can't fix a bad request
+
+
+def test_fallback_can_be_turned_off(monkeypatch, two_models):
+    monkeypatch.setenv("GEMINI_FALLBACK_MODEL", "")
+    calls = fake_send(monkeypatch, [FakeApiError(503)] * llm.MAX_ATTEMPTS)
+    with pytest.raises(llm.LLMUnavailableError):
+        llm.call_llm("prompt")
+    assert set(calls) == {"main-model"}
+
+
+def test_fallback_equal_to_main_model_is_not_tried_twice(monkeypatch, two_models):
+    monkeypatch.setenv("GEMINI_FALLBACK_MODEL", "main-model")
+    calls = fake_send(monkeypatch, [FakeApiError(503)] * llm.MAX_ATTEMPTS)
+    with pytest.raises(llm.LLMUnavailableError):
+        llm.call_llm("prompt")
+    assert len(calls) == llm.MAX_ATTEMPTS
 
 
 # --- pacing ---

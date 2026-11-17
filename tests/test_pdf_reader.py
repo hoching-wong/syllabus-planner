@@ -1,8 +1,9 @@
 import io
+from pathlib import Path
 
 import pytest
 
-from planner.pdf_reader import PdfReadError, read_pdf
+from planner.pdf_reader import PdfReadError, _table_to_text, read_pdf
 
 
 def make_pdf(page_texts: list[str]) -> bytes:
@@ -78,6 +79,27 @@ def test_pdf_with_no_text_raises_a_helpful_error():
     pdf = io.BytesIO(make_pdf(["", ""]))
     with pytest.raises(PdfReadError, match="scanned"):
         read_pdf(pdf)
+
+
+def test_real_syllabus_keeps_spaces_between_words():
+    # Regression test: with pdfplumber's default settings this PDF came out as
+    # "willcounttoward22.5%ofyourfinalgrade".
+    fixture = Path(__file__).parent / "fixtures" / "MAT235H1_Syllabus.pdf"
+    text = read_pdf(fixture)
+    assert "will count toward 22.5% of your final grade" in text
+
+
+def test_table_rows_become_lines_with_cells_kept_together():
+    rows = [["Sep 16", "Sep 17\nTutorial\nQuiz 1", None], ["Sep 23", "", "Sep 24"]]
+    assert _table_to_text(rows) == "Sep 16 | Sep 17 / Tutorial / Quiz 1 | \nSep 23 |  | Sep 24"
+
+
+def test_real_syllabus_schedule_grid_keeps_each_quiz_with_its_date():
+    # As flat text the grid lost which column "Quiz 1" was in; as a table it doesn't.
+    fixture = Path(__file__).parent / "fixtures" / "MAT235H1_Syllabus.pdf"
+    text = read_pdf(fixture)
+    assert "Sep 17 / Tutorial / Quiz 1" in text
+    assert "Dec 3 / Tutorial / Quiz 8" in text
 
 
 def test_file_that_is_not_a_pdf_raises():

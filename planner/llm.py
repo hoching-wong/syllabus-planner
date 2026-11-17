@@ -19,6 +19,9 @@ from google import genai
 load_dotenv()
 
 DEFAULT_MODEL = "gemini-3.8-flash"
+# Used only if the main model is still unavailable after every retry.
+# Set GEMINI_FALLBACK_MODEL= (empty) in .env to turn the fallback off.
+DEFAULT_FALLBACK_MODEL = "gemini-3.5-flash-lite"
 CACHE_DIR = Path(".cache") / "llm"  # ".cache" is already in .gitignore
 
 MAX_ATTEMPTS = 5  # total tries per prompt, including the first
@@ -37,17 +40,31 @@ class LLMError(Exception):
     """Raised when we can't get a reply from the model. The message is user-safe."""
 
 
+class LLMUnavailableError(LLMError):
+    """The model kept failing with a temporary error (429/5xx) through every retry.
+    This is the one failure where trying a different model can help."""
+
+
 def _model_name() -> str:
     return os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
+
+
+def _models_to_try() -> list[str]:
+    """The main model first, then the fallback (if one is set and different)."""
+    models = [_model_name()]
+    fallback = os.environ.get("GEMINI_FALLBACK_MODEL", DEFAULT_FALLBACK_MODEL)
+    if fallback and fallback not in models:
+        models.append(fallback)
+    return models
 
 
 # --- cache ---
 
 
-def _cache_path(prompt: str) -> Path:
-    """One file per (model, prompt). Including the model means switching
-    models never returns an answer that a different model gave."""
-    key = hashlib.sha256(f"{_model_name()}\n{prompt}".encode("utf-8")).hexdigest()
+def _cache_path(prompt: str, model: str) -> Path:
+    """One file per (model, prompt). Including the model means a reply is
+    always filed under the model that actually wrote it."""
+    key = hashlib.sha256(f"{model}\n{prompt}".encode("utf-8")).hexdigest()
     return CACHE_DIR / f"{key}.txt"
 
 
@@ -65,7 +82,7 @@ def _write_cache(path: Path, text: str) -> None:
 # --- talking to Gemini ---
 
 
-def _send_request(prompt: str) -> str:
+def _send_request(prompt: str, model: str) -> str:
     """One call to Gemini, no retries. The only function that uses the SDK."""
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
@@ -76,7 +93,7 @@ def _send_request(prompt: str) -> str:
     client = genai.Client(api_key=api_key, http_options={"retry_options": {"attempts": 1}})
 
     interaction = client.interactions.create(
-        model=_model_name(),
+        model=model,
         input=prompt,
         store=False,  # don't keep a copy of the syllabus text on Google's servers
         response_format={"type": "text", "mime_type": "application/json"},
@@ -106,27 +123,47 @@ def _wait_for_pacing() -> None:
     _last_call_time = time.monotonic()
 
 
-def _send_with_retries(prompt: str) -> str:
+def _send_with_retries(prompt: str, model: str) -> str:
     for attempt in range(1, MAX_ATTEMPTS + 1):
         _wait_for_pacing()
         try:
-            return _send_request(prompt)
+            return _send_request(prompt, model)
         except LLMError:
             raise  # already has a clear message (e.g. missing key)
         except Exception as error:
-            if not _is_retryable(error) or attempt == MAX_ATTEMPTS:
-                raise LLMError(f"Gemini request failed: {type(error).__name__}: {error}") from error
+            message = f"Gemini request failed ({model}): {type(error).__name__}: {error}"
+            if not _is_retryable(error):
+                raise LLMError(message) from error  # retrying (or switching models) won't help
+            if attempt == MAX_ATTEMPTS:
+                raise LLMUnavailableError(message) from error
             time.sleep(_backoff_delay(attempt))
     raise LLMError("Gemini request failed.")  # unreachable; keeps type checkers happy
 
 
-def call_llm(prompt: str) -> str:
-    """Return the model's reply (JSON text) for `prompt`, using the cache first."""
-    path = _cache_path(prompt)
-    cached = _read_cache(path)
-    if cached is not None:
-        return cached
-
-    text = _send_with_retries(prompt)
-    _write_cache(path, text)  # only successful replies are cached
+def _ask_model(prompt: str, model: str) -> str:
+    """Send the prompt to one model (with retries) and cache a successful reply."""
+    text = _send_with_retries(prompt, model)
+    _write_cache(_cache_path(prompt, model), text)  # only successful replies are cached
     return text
+
+
+def call_llm(prompt: str) -> str:
+    """Return the model's reply (JSON text) for `prompt`.
+
+    Order: (1) the cache, for the main model then the fallback; (2) the main
+    model; (3) only if the main model stays unavailable after all its retries,
+    the fallback model. Any other error is raised straight away.
+    """
+    models = _models_to_try()
+
+    for model in models:
+        cached = _read_cache(_cache_path(prompt, model))
+        if cached is not None:
+            return cached
+
+    for model in models[:-1]:
+        try:
+            return _ask_model(prompt, model)
+        except LLMUnavailableError:
+            pass  # this model is overloaded; move on to the next one
+    return _ask_model(prompt, models[-1])  # the last model's errors are raised
