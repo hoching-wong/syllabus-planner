@@ -10,6 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from planner.adjust import courses_with_quizzes, move_to_weekday
+from planner.calendar_export import dated_events, events_to_ics
 from planner.display import (
     chart_rows,
     crunch_warnings,
@@ -239,10 +240,23 @@ if "table_events" in st.session_state:
     picked_days = {course: day for course, day in chosen_days.items() if day != "Not set"}
     notes = review_notes(events, picked_days)
     if notes:
-        with st.expander("Things to check", expanded=True):
+        with st.expander("Things to check before exporting", expanded=True):
             st.markdown("\n".join(f"- {note}" for note in notes))
 
     st.button("Reset to extracted values", on_click=reset_table)
+
+    # --- export: built from the edited events, so it matches what the table shows ---
+    exportable = dated_events(events)
+    st.download_button(
+        "Download calendar (.ics)",
+        data=events_to_ics(events),
+        file_name="syllabus_planner.ics",
+        mime="text/calendar",
+        disabled=not exportable,
+    )
+    not_exported = len(events) - len(exportable)
+    if not_exported:
+        st.caption(f"{not_exported} event(s) have no date, so they won't be in the calendar.")
 
     # The workload is worked out from the edited events, so editing the table updates it.
     workload = compute_workload(events, crunch_threshold)

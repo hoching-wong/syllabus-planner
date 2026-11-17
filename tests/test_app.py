@@ -536,3 +536,46 @@ def test_reset_restores_the_extracted_events_and_clears_the_tutorial_day(model_c
     assert event(at, "Term Test 1").weight_percent == 22.5
     assert event(at, "Quiz 1").due_date == date(2026, 9, 17)  # the syllabus's own date again
     assert len(model_calls) == 1  # no new model call
+
+
+# --- calendar download ---
+
+
+def download_buttons(at: AppTest):
+    return at.get("download_button")
+
+
+def test_no_download_button_before_extracting(model_calls):
+    assert not download_buttons(new_app())
+
+
+def test_download_button_appears_after_extracting(model_calls):
+    at = extracted_app(model_calls)
+    (button,) = download_buttons(at)
+    assert button.proto.label == "Download calendar (.ics)"
+    assert not button.proto.disabled
+    assert button.proto.url.endswith(".ics")
+
+
+def test_undated_events_are_reported_as_not_exported(model_calls):
+    at = extracted_app(model_calls)  # the Final Exam has no date
+    assert "1 event(s) have no date, so they won't be in the calendar." in captions(at)
+
+
+def test_giving_the_undated_event_a_date_removes_the_note(model_calls):
+    at = extracted_app(model_calls)
+    at = edit_table(at, edited_rows={row_of(at, "Final Exam"): {"Date": "2026-12-15"}})
+    assert "won't be in the calendar" not in captions(at)
+
+
+def test_download_is_disabled_when_no_event_has_a_date(model_calls):
+    at = extracted_app(model_calls)
+    dates = {row: {"Date": None} for row in range(len(table(at)))}
+    at = edit_table(at, edited_rows=dates)
+    (button,) = download_buttons(at)
+    assert button.proto.disabled
+
+
+def test_checklist_heading_says_to_check_before_exporting(model_calls):
+    at = extracted_app(model_calls)
+    assert "Things to check before exporting" in [e.label for e in at.expander]
