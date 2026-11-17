@@ -21,7 +21,7 @@ def isolated_llm(tmp_path, monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
     # Fallback off by default so each test sees one model; fallback tests turn it on.
-    monkeypatch.setenv("GEMINI_FALLBACK_MODEL", "")
+    monkeypatch.setenv("GEMINI_FALLBACK_MODELS", "")
     sleeps: list[float] = []
     monkeypatch.setattr(llm.time, "sleep", sleeps.append)
     return sleeps
@@ -127,21 +127,34 @@ def test_failed_call_is_not_cached(monkeypatch):
     assert not llm.CACHE_DIR.exists() or not list(llm.CACHE_DIR.iterdir())
 
 
-# --- fallback model ---
+# --- fallback models ---
 
 
 @pytest.fixture
 def two_models(monkeypatch):
     monkeypatch.setenv("GEMINI_MODEL", "main-model")
-    monkeypatch.setenv("GEMINI_FALLBACK_MODEL", "backup-model")
+    monkeypatch.setenv("GEMINI_FALLBACK_MODELS", "backup-model")
 
 
-def test_falls_back_when_main_model_stays_unavailable(monkeypatch, two_models):
-    outcomes = [FakeApiError(503)] * llm.MAX_ATTEMPTS + ["backup reply"]
-    calls = fake_send(monkeypatch, outcomes)
+@pytest.fixture
+def three_models(monkeypatch):
+    monkeypatch.setenv("GEMINI_MODEL", "main-model")
+    monkeypatch.setenv("GEMINI_FALLBACK_MODELS", "second-model,third-model")
+
+
+def busy(times: int) -> list:
+    """`times` temporary 503 errors in a row."""
+    return [FakeApiError(503)] * times
+
+
+def test_a_model_with_a_fallback_gets_fewer_tries_than_the_last_one():
+    assert llm.ATTEMPTS_BEFORE_SWITCHING < llm.MAX_ATTEMPTS
+
+
+def test_switches_to_the_backup_after_only_a_few_tries(monkeypatch, two_models):
+    calls = fake_send(monkeypatch, busy(llm.ATTEMPTS_BEFORE_SWITCHING) + ["backup reply"])
     assert llm.call_llm("prompt") == "backup reply"
-    # The main model got every retry first; only then was the backup used.
-    assert calls == ["main-model"] * llm.MAX_ATTEMPTS + ["backup-model"]
+    assert calls == ["main-model"] * llm.ATTEMPTS_BEFORE_SWITCHING + ["backup-model"]
 
 
 def test_main_model_is_used_when_it_works(monkeypatch, two_models):
@@ -150,19 +163,19 @@ def test_main_model_is_used_when_it_works(monkeypatch, two_models):
     assert calls == ["main-model"]
 
 
-def test_fallback_reply_is_cached_and_reused(monkeypatch, two_models):
-    calls = fake_send(monkeypatch, [FakeApiError(503)] * llm.MAX_ATTEMPTS + ["backup reply"])
+def test_a_reply_from_the_backup_is_cached_and_reused(monkeypatch, two_models):
+    calls = fake_send(monkeypatch, busy(llm.ATTEMPTS_BEFORE_SWITCHING) + ["backup reply"])
     llm.call_llm("prompt")
     calls_so_far = len(calls)
     assert llm.call_llm("prompt") == "backup reply"  # no new API calls, no waiting
     assert len(calls) == calls_so_far
 
 
-def test_raises_when_both_models_are_unavailable(monkeypatch, two_models):
-    calls = fake_send(monkeypatch, [FakeApiError(503)] * (2 * llm.MAX_ATTEMPTS))
+def test_the_last_model_gets_the_full_number_of_tries(monkeypatch, two_models):
+    calls = fake_send(monkeypatch, busy(llm.ATTEMPTS_BEFORE_SWITCHING + llm.MAX_ATTEMPTS))
     with pytest.raises(llm.LLMUnavailableError, match="backup-model"):
         llm.call_llm("prompt")
-    assert len(calls) == 2 * llm.MAX_ATTEMPTS
+    assert calls == ["main-model"] * llm.ATTEMPTS_BEFORE_SWITCHING + ["backup-model"] * llm.MAX_ATTEMPTS
 
 
 def test_non_retryable_error_does_not_trigger_the_fallback(monkeypatch, two_models):
@@ -173,20 +186,74 @@ def test_non_retryable_error_does_not_trigger_the_fallback(monkeypatch, two_mode
     assert calls == ["main-model"]  # switching models can't fix a bad request
 
 
-def test_fallback_can_be_turned_off(monkeypatch, two_models):
-    monkeypatch.setenv("GEMINI_FALLBACK_MODEL", "")
-    calls = fake_send(monkeypatch, [FakeApiError(503)] * llm.MAX_ATTEMPTS)
+def test_fallbacks_can_be_turned_off(monkeypatch, two_models):
+    monkeypatch.setenv("GEMINI_FALLBACK_MODELS", "")
+    calls = fake_send(monkeypatch, busy(llm.MAX_ATTEMPTS))
     with pytest.raises(llm.LLMUnavailableError):
         llm.call_llm("prompt")
-    assert set(calls) == {"main-model"}
+    assert calls == ["main-model"] * llm.MAX_ATTEMPTS  # no one to switch to, so full tries
 
 
-def test_fallback_equal_to_main_model_is_not_tried_twice(monkeypatch, two_models):
-    monkeypatch.setenv("GEMINI_FALLBACK_MODEL", "main-model")
-    calls = fake_send(monkeypatch, [FakeApiError(503)] * llm.MAX_ATTEMPTS)
+def test_a_fallback_equal_to_the_main_model_is_not_tried_twice(monkeypatch, two_models):
+    monkeypatch.setenv("GEMINI_FALLBACK_MODELS", "main-model")
+    calls = fake_send(monkeypatch, busy(llm.MAX_ATTEMPTS))
     with pytest.raises(llm.LLMUnavailableError):
         llm.call_llm("prompt")
     assert len(calls) == llm.MAX_ATTEMPTS
+
+
+# --- a chain of several fallbacks ---
+
+
+def test_the_second_model_answers_if_the_main_one_is_busy(monkeypatch, three_models):
+    calls = fake_send(monkeypatch, busy(llm.ATTEMPTS_BEFORE_SWITCHING) + ["second reply"])
+    assert llm.call_llm("prompt") == "second reply"
+    assert calls == ["main-model"] * llm.ATTEMPTS_BEFORE_SWITCHING + ["second-model"]
+
+
+def test_the_third_model_answers_if_the_first_two_are_busy(monkeypatch, three_models):
+    calls = fake_send(monkeypatch, busy(2 * llm.ATTEMPTS_BEFORE_SWITCHING) + ["third reply"])
+    assert llm.call_llm("prompt") == "third reply"
+    assert calls == (
+        ["main-model"] * llm.ATTEMPTS_BEFORE_SWITCHING
+        + ["second-model"] * llm.ATTEMPTS_BEFORE_SWITCHING
+        + ["third-model"]
+    )
+
+
+def test_only_the_last_model_in_the_chain_gets_the_full_tries(monkeypatch, three_models):
+    calls = fake_send(monkeypatch, busy(2 * llm.ATTEMPTS_BEFORE_SWITCHING + llm.MAX_ATTEMPTS))
+    with pytest.raises(llm.LLMUnavailableError, match="third-model"):
+        llm.call_llm("prompt")
+    assert calls.count("main-model") == llm.ATTEMPTS_BEFORE_SWITCHING
+    assert calls.count("second-model") == llm.ATTEMPTS_BEFORE_SWITCHING
+    assert calls.count("third-model") == llm.MAX_ATTEMPTS
+
+
+def test_a_cached_reply_from_a_later_model_is_used_without_any_call(monkeypatch, three_models):
+    llm._write_cache(llm._cache_path("prompt", "third-model"), "cached third reply")
+    calls = fake_send(monkeypatch, [])
+    assert llm.call_llm("prompt") == "cached third reply"
+    assert calls == []
+
+
+# --- the list of models, from the settings ---
+
+
+def test_default_models_are_the_main_model_then_3_6_then_3_5_lite(monkeypatch):
+    monkeypatch.delenv("GEMINI_FALLBACK_MODELS")  # not set at all means "use the defaults"
+    assert llm._models_to_try() == [llm.DEFAULT_MODEL, "gemini-3.6-flash", "gemini-3.5-flash-lite"]
+
+
+def test_empty_setting_means_no_fallbacks(monkeypatch):
+    monkeypatch.setenv("GEMINI_FALLBACK_MODELS", "")
+    assert llm._models_to_try() == [llm.DEFAULT_MODEL]
+
+
+def test_setting_is_trimmed_and_blanks_and_repeats_are_dropped(monkeypatch):
+    monkeypatch.setenv("GEMINI_MODEL", "main-model")
+    monkeypatch.setenv("GEMINI_FALLBACK_MODELS", " a , ,b,a,main-model ")
+    assert llm._models_to_try() == ["main-model", "a", "b"]
 
 
 # --- pacing ---

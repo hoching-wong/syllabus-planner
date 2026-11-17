@@ -19,12 +19,17 @@ from google import genai
 load_dotenv()
 
 DEFAULT_MODEL = "gemini-3.8-flash"
-# Used only if the main model is still unavailable after every retry.
-# Set GEMINI_FALLBACK_MODEL= (empty) in .env to turn the fallback off.
-DEFAULT_FALLBACK_MODEL = "gemini-3.5-flash-lite"
+# Tried in this order if the main model keeps failing with a temporary error.
+# Set GEMINI_FALLBACK_MODELS in .env to change them (comma-separated),
+# or set it to nothing (GEMINI_FALLBACK_MODELS=) to turn the fallbacks off.
+DEFAULT_FALLBACK_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash-lite"]
 CACHE_DIR = Path(".cache") / "llm"  # ".cache" is already in .gitignore
 
-MAX_ATTEMPTS = 5  # total tries per prompt, including the first
+# A model that has another model after it gets only a few tries before we move on,
+# so a busy model doesn't hold things up. The LAST model has nothing to fall back
+# to, so it gets the full number of tries.
+ATTEMPTS_BEFORE_SWITCHING = 2
+MAX_ATTEMPTS = 5  # tries for the last model, including the first
 BASE_DELAY_SECONDS = 2.0  # waits are 2s, 4s, 8s, 16s (plus a little jitter)
 MIN_SECONDS_BETWEEN_CALLS = 4.0  # pause between real API calls
 
@@ -50,11 +55,16 @@ def _model_name() -> str:
 
 
 def _models_to_try() -> list[str]:
-    """The main model first, then the fallback (if one is set and different)."""
+    """The main model first, then each fallback in order (skipping blanks and repeats)."""
     models = [_model_name()]
-    fallback = os.environ.get("GEMINI_FALLBACK_MODEL", DEFAULT_FALLBACK_MODEL)
-    if fallback and fallback not in models:
-        models.append(fallback)
+    setting = os.environ.get("GEMINI_FALLBACK_MODELS")
+    if setting is None:  # not set at all: use the defaults ("" means "no fallbacks")
+        fallbacks = DEFAULT_FALLBACK_MODELS
+    else:
+        fallbacks = [name.strip() for name in setting.split(",")]
+    for name in fallbacks:
+        if name and name not in models:
+            models.append(name)
     return models
 
 
@@ -123,8 +133,8 @@ def _wait_for_pacing() -> None:
     _last_call_time = time.monotonic()
 
 
-def _send_with_retries(prompt: str, model: str) -> str:
-    for attempt in range(1, MAX_ATTEMPTS + 1):
+def _send_with_retries(prompt: str, model: str, attempts: int) -> str:
+    for attempt in range(1, attempts + 1):
         _wait_for_pacing()
         try:
             return _send_request(prompt, model)
@@ -134,15 +144,15 @@ def _send_with_retries(prompt: str, model: str) -> str:
             message = f"Gemini request failed ({model}): {type(error).__name__}: {error}"
             if not _is_retryable(error):
                 raise LLMError(message) from error  # retrying (or switching models) won't help
-            if attempt == MAX_ATTEMPTS:
+            if attempt == attempts:
                 raise LLMUnavailableError(message) from error
             time.sleep(_backoff_delay(attempt))
     raise LLMError("Gemini request failed.")  # unreachable; keeps type checkers happy
 
 
-def _ask_model(prompt: str, model: str) -> str:
-    """Send the prompt to one model (with retries) and cache a successful reply."""
-    text = _send_with_retries(prompt, model)
+def _ask_model(prompt: str, model: str, attempts: int) -> str:
+    """Send the prompt to one model (up to `attempts` tries) and cache a successful reply."""
+    text = _send_with_retries(prompt, model, attempts)
     _write_cache(_cache_path(prompt, model), text)  # only successful replies are cached
     return text
 
@@ -150,9 +160,10 @@ def _ask_model(prompt: str, model: str) -> str:
 def call_llm(prompt: str) -> str:
     """Return the model's reply (JSON text) for `prompt`.
 
-    Order: (1) the cache, for the main model then the fallback; (2) the main
-    model; (3) only if the main model stays unavailable after all its retries,
-    the fallback model. Any other error is raised straight away.
+    Order: (1) the cache, checking every model in the list; (2) each model in
+    turn, giving up on it after ATTEMPTS_BEFORE_SWITCHING tries if it keeps
+    failing with a temporary error; (3) the last model gets the full MAX_ATTEMPTS.
+    Any other kind of error (bad key, bad request) is raised straight away.
     """
     models = _models_to_try()
 
@@ -163,7 +174,7 @@ def call_llm(prompt: str) -> str:
 
     for model in models[:-1]:
         try:
-            return _ask_model(prompt, model)
+            return _ask_model(prompt, model, ATTEMPTS_BEFORE_SWITCHING)
         except LLMUnavailableError:
             pass  # this model is overloaded; move on to the next one
-    return _ask_model(prompt, models[-1])  # the last model's errors are raised
+    return _ask_model(prompt, models[-1], MAX_ATTEMPTS)  # the last model's errors are raised
