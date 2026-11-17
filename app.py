@@ -10,12 +10,20 @@ import pandas as pd
 import streamlit as st
 
 from planner.adjust import courses_with_quizzes, move_to_weekday
-from planner.display import default_course_name, duplicate_names, review_notes
+from planner.display import (
+    chart_rows,
+    crunch_warnings,
+    default_course_name,
+    duplicate_names,
+    review_notes,
+    unscheduled_note,
+)
 from planner.editing import COLUMNS, TYPE_OPTIONS, events_to_rows, rows_to_events
 from planner.extractor import ExtractionError, extract_events
 from planner.llm import LLMError
 from planner.models import Event
 from planner.pdf_reader import PdfReadError, read_pdf
+from planner.workload import DEFAULT_THRESHOLD, compute_workload
 
 # Index 0 means "no preference"; Monday is index 1, so weekday number = index - 1.
 TUTORIAL_DAYS = ["Not set", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
@@ -146,6 +154,20 @@ if st.button("Extract events", disabled=not uploaded_files or bool(duplicates)):
     st.session_state["applied_days"] = days
     show_in_table(apply_tutorial_days(extracted, days))
 
+# --- crunch-week threshold ---
+
+crunch_threshold = st.sidebar.slider(
+    "Crunch-week threshold",
+    min_value=5,
+    max_value=60,
+    value=int(DEFAULT_THRESHOLD),
+    step=1,
+    format="%d%%",
+    help="A week is flagged when this much of your grades (or more) is due in it, "
+    "across all courses. If a syllabus drops your lowest scores, its items are shown "
+    "as if every one counts, so the weekly totals are a worst case.",
+)
+
 # --- tutorial days: one picker per course that has quizzes ---
 # This comes after extraction so that a newly extracted course gets its picker straight away.
 
@@ -221,3 +243,22 @@ if "table_events" in st.session_state:
             st.markdown("\n".join(f"- {note}" for note in notes))
 
     st.button("Reset to extracted values", on_click=reset_table)
+
+    # The workload is worked out from the edited events, so editing the table updates it.
+    workload = compute_workload(events, crunch_threshold)
+    if workload.weeks:
+        st.subheader("Workload by week")
+        for warning in crunch_warnings(workload):
+            st.warning(warning)
+        chart = pd.DataFrame(chart_rows(workload)).set_index("Week")
+        # The colours follow the column order: crunch weeks red, other weeks blue.
+        st.bar_chart(
+            chart,
+            color=["#d62728", "#1f77b4"],
+            x_label="Week starting (Monday)",
+            y_label="% of grades due",
+        )
+    # Shown even when no event has a date, so undated weight is never silently hidden.
+    note = unscheduled_note(workload)
+    if note:
+        st.caption(note)

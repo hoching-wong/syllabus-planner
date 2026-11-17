@@ -348,6 +348,102 @@ def test_choosing_not_set_does_not_change_dates(model_calls):
     assert event(at, "Quiz 1").due_date == date(2026, 9, 18)  # only Reset undoes the move
 
 
+# --- the weekly workload and crunch weeks ---
+# With the canned reply, Term Test 1 (22.5%) is due the week of Mon Oct 19 and
+# Term Test 2 (22.5%) the week of Mon Nov 23: busy, but under the default 25%.
+
+
+def crunch_lines(at: AppTest) -> list[str]:
+    return [w.value for w in at.warning if w.value.startswith("Week of")]
+
+
+def charts(at: AppTest):
+    return at.get("vega_lite_chart")
+
+
+def captions(at: AppTest) -> str:
+    return " ".join(c.value for c in at.caption)
+
+
+def test_no_workload_before_extracting(model_calls):
+    at = new_app()
+    assert not charts(at)
+    assert at.sidebar.slider[0].value == 25  # the default threshold is already there
+
+
+def test_workload_chart_appears_after_extracting(model_calls):
+    at = extracted_app(model_calls)
+    assert not at.exception
+    assert len(charts(at)) == 1
+    assert "Workload by week" in [s.value for s in at.subheader]
+
+
+def test_no_warning_when_every_week_is_under_the_threshold(model_calls):
+    assert crunch_lines(extracted_app(model_calls)) == []
+
+
+def test_lowering_the_threshold_flags_the_busy_weeks(model_calls):
+    at = extracted_app(model_calls)
+    at.sidebar.slider[0].set_value(20).run()
+    assert not at.exception
+    assert crunch_lines(at) == [
+        "Week of Oct 19, 2026: 22.5% of your grades are due (MAT235H1 22.5%).",
+        "Week of Nov 23, 2026: 22.5% of your grades are due (MAT235H1 22.5%).",
+    ]
+    assert len(model_calls) == 1  # moving the slider doesn't re-extract
+
+
+def test_undated_weight_is_mentioned(model_calls):
+    # The final exam (40%) has no date, so it can't be placed in a week.
+    assert "40% of your grades (1 event) has no date" in captions(extracted_app(model_calls))
+
+
+def test_adding_an_event_to_a_busy_week_creates_a_crunch_week(model_calls):
+    at = extracted_app(model_calls)
+    at = edit_table(at, added_rows=[{"Title": "Essay", "Date": "2026-10-21", "Weight": 10.0}])
+    assert crunch_lines(at) == ["Week of Oct 19, 2026: 32.5% of your grades are due (MAT235H1 32.5%)."]
+
+
+def test_editing_a_weight_changes_the_crunch_weeks(model_calls):
+    at = extracted_app(model_calls)
+    at = edit_table(at, edited_rows={row_of(at, "Term Test 2"): {"Weight": 30.0}})
+    assert crunch_lines(at) == ["Week of Nov 23, 2026: 30% of your grades are due (MAT235H1 30%)."]
+
+
+def test_moving_an_event_to_another_week_updates_the_warning(model_calls):
+    at = extracted_app(model_calls)
+    at.sidebar.slider[0].set_value(20).run()
+    at = edit_table(at, edited_rows={row_of(at, "Term Test 1"): {"Date": "2026-10-27"}})  # a Tuesday
+    assert crunch_lines(at)[0].startswith("Week of Oct 26, 2026")
+
+
+def test_deleting_an_event_removes_its_warning(model_calls):
+    at = extracted_app(model_calls)
+    at.sidebar.slider[0].set_value(20).run()
+    at = edit_table(at, deleted_rows=[row_of(at, "Term Test 1")])
+    assert all("Oct 19" not in line for line in crunch_lines(at))
+    assert any("Nov 23" in line for line in crunch_lines(at))
+
+
+def test_two_courses_in_the_same_week_add_up(model_calls):
+    at = two_course_app(model_calls)  # both courses have a 22.5% test that week
+    assert crunch_lines(at) == [
+        "Week of Oct 19, 2026: 45% of your grades are due (MAT235H1 22.5%, OTHER 22.5%).",
+        "Week of Nov 23, 2026: 45% of your grades are due (MAT235H1 22.5%, OTHER 22.5%).",
+    ]
+
+
+def test_only_undated_events_still_mention_the_missing_dates(monkeypatch):
+    reply = json.dumps({"events": [
+        {"title": "Participation", "type": "other", "due_date": None, "weight_percent": 20, "confidence": 1},
+    ]})
+    monkeypatch.setattr(extractor, "call_llm", lambda prompt: reply)
+    at = extract(upload(new_app(), ("MAT235H1_Syllabus.pdf", PDF_BYTES)))
+    assert not at.exception
+    assert not charts(at)  # no week to draw
+    assert "20% of your grades (1 event) has no date" in captions(at)
+
+
 # --- a separate tutorial day for each course ---
 
 

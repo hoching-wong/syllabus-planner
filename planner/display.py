@@ -1,10 +1,12 @@
 """Text shown to the user: course-name guesses and review notes. Pure logic."""
 
 import re
+from datetime import date
 from pathlib import Path
 
 from planner.editing import sort_events
 from planner.models import Event, EventType
+from planner.workload import Workload
 
 LOW_CONFIDENCE = 0.7  # below this, tell the user to double-check the event
 
@@ -61,3 +63,59 @@ def review_notes(events: list[Event], tutorial_days: dict[str, str] | None = Non
                 "Set your tutorial day in the sidebar if yours is different."
             )
     return notes
+
+
+# --- the weekly workload view ---
+
+
+def _percent(value: float) -> str:
+    # round() hides float noise (30.299999999999997 -> 30.3); :g drops a trailing .0 (25.0 -> 25).
+    return f"{round(value, 2):g}%"
+
+
+def _day(day: date) -> str:
+    return f"{day:%b} {day.day}, {day.year}"  # e.g. "Oct 19, 2026" (no zero-padded day)
+
+
+def crunch_warnings(workload: Workload) -> list[str]:
+    """One line per crunch week, in date order, naming each course's share."""
+    lines = []
+    for week in workload.weeks:
+        if not week.is_crunch:
+            continue
+        # Biggest share first; courses with nothing due (weight 0) aren't worth listing.
+        shares = sorted(
+            ((course, weight) for course, weight in week.weight_by_course.items() if weight > 0),
+            key=lambda share: (-share[1], share[0]),
+        )
+        detail = ", ".join(f"{course} {_percent(weight)}" for course, weight in shares)
+        lines.append(f"Week of {_day(week.week_start)}: {_percent(week.total_weight)} of your grades are due ({detail}).")
+    return lines
+
+
+def unscheduled_note(workload: Workload) -> str | None:
+    """Say how much grade weight isn't in the weekly view because it has no date."""
+    if workload.unscheduled_weight <= 0:
+        return None
+    count = workload.unscheduled_count
+    events = "event" if count == 1 else "events"
+    return (
+        f"{_percent(workload.unscheduled_weight)} of your grades ({count} {events}) "
+        "has no date, so it isn't in the weekly view."
+    )
+
+
+def chart_rows(workload: Workload) -> list[dict]:
+    """One row per week for the bar chart. Crunch weeks go in their own column so
+    the chart can colour them differently."""
+    rows = []
+    for week in workload.weeks:
+        weight = round(week.total_weight, 2)
+        rows.append(
+            {
+                "Week": week.week_start.isoformat(),  # ISO dates sort correctly as text
+                "Crunch weeks": weight if week.is_crunch else 0.0,
+                "Other weeks": 0.0 if week.is_crunch else weight,
+            }
+        )
+    return rows
