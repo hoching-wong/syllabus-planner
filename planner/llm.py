@@ -29,6 +29,10 @@ CACHE_DIR = Path(".cache") / "llm"  # ".cache" is already in .gitignore
 # so a busy model doesn't hold things up. The LAST model has nothing to fall back
 # to, so it gets the full number of tries.
 ATTEMPTS_BEFORE_SWITCHING = 2
+# How long to wait for ONE request before giving up on it. The biggest syllabus we
+# have (about 50 events) took 16-32 seconds on a normal day, so 60 leaves room
+# without letting a stuck model hold things up for minutes.
+REQUEST_TIMEOUT_SECONDS = 60
 MAX_ATTEMPTS = 5  # tries for the last model, including the first
 BASE_DELAY_SECONDS = 2.0  # waits are 2s, 4s, 8s, 16s (plus a little jitter)
 MIN_SECONDS_BETWEEN_CALLS = 4.0  # pause between real API calls
@@ -107,6 +111,7 @@ def _send_request(prompt: str, model: str) -> str:
         input=prompt,
         store=False,  # don't keep a copy of the syllabus text on Google's servers
         response_format={"type": "text", "mime_type": "application/json"},
+        timeout=REQUEST_TIMEOUT_SECONDS,
     )
     return interaction.output_text
 
@@ -115,6 +120,14 @@ def _is_retryable(error: Exception) -> bool:
     # The SDK's API errors carry the HTTP status as `status_code`. Other errors
     # (like our own LLMError) don't have one, so they are never retried.
     return getattr(error, "status_code", None) in RETRYABLE_STATUS_CODES
+
+
+def _is_connection_problem(error: Exception) -> bool:
+    """True if the request timed out or never got through (as opposed to Google
+    answering with an error). The SDK's timeout error is a kind of connection
+    error, so checking the class names up the family tree covers both. We check
+    names because the SDK keeps these classes in a private module we shouldn't import."""
+    return any(cls.__name__ == "APIConnectionError" for cls in type(error).__mro__)
 
 
 def _backoff_delay(attempt: int) -> float:
@@ -141,6 +154,14 @@ def _send_with_retries(prompt: str, model: str, attempts: int) -> str:
         except LLMError:
             raise  # already has a clear message (e.g. missing key)
         except Exception as error:
+            if _is_connection_problem(error):
+                # A timeout means this model is too slow right now, and trying it
+                # again would just wait out another full timeout. Report it as
+                # unavailable so the next model in the list gets a turn.
+                raise LLMUnavailableError(
+                    f"Gemini ({model}) did not respond in time or could not be reached "
+                    f"({type(error).__name__})."
+                ) from error
             message = f"Gemini request failed ({model}): {type(error).__name__}: {error}"
             if not _is_retryable(error):
                 raise LLMError(message) from error  # retrying (or switching models) won't help

@@ -1,5 +1,10 @@
 """Tests for planner/llm.py. None of these make a real API call."""
 
+import json
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
 import pytest
 
 from planner import llm
@@ -11,6 +16,14 @@ class FakeApiError(Exception):
     def __init__(self, status_code: int):
         super().__init__(f"fake error {status_code}")
         self.status_code = status_code
+
+
+class APIConnectionError(Exception):
+    """Same name as the SDK's connection error, which is what llm.py looks for."""
+
+
+class APITimeoutError(APIConnectionError):
+    """Same name and parent as the SDK's timeout error."""
 
 
 @pytest.fixture(autouse=True)
@@ -256,6 +269,91 @@ def test_setting_is_trimmed_and_blanks_and_repeats_are_dropped(monkeypatch):
     assert llm._models_to_try() == ["main-model", "a", "b"]
 
 
+# --- timeouts ---
+
+
+def test_a_timeout_moves_straight_on_to_the_next_model(monkeypatch, two_models):
+    calls = fake_send(monkeypatch, [APITimeoutError("slow"), "backup reply"])
+    assert llm.call_llm("prompt") == "backup reply"
+    assert calls == ["main-model", "backup-model"]  # no second try on the slow model
+
+
+def test_a_dropped_connection_is_treated_the_same_way(monkeypatch, two_models):
+    calls = fake_send(monkeypatch, [APIConnectionError("no route"), "backup reply"])
+    assert llm.call_llm("prompt") == "backup reply"
+    assert calls == ["main-model", "backup-model"]
+
+
+def test_a_timeout_on_the_last_model_fails_at_once_with_a_clear_message(monkeypatch):
+    calls = fake_send(monkeypatch, [APITimeoutError("slow"), "never reached"])
+    with pytest.raises(llm.LLMUnavailableError, match=r"did not respond in time") as caught:
+        llm.call_llm("prompt")
+    assert len(calls) == 1  # one try only, not MAX_ATTEMPTS
+    assert "APITimeoutError" in str(caught.value)
+    assert "timeout` argument" not in str(caught.value)  # the SDK's own advice isn't shown
+
+
+def test_every_model_timing_out_names_the_last_one(monkeypatch, three_models):
+    calls = fake_send(monkeypatch, [APITimeoutError("slow")] * 3)
+    with pytest.raises(llm.LLMUnavailableError, match="third-model"):
+        llm.call_llm("prompt")
+    assert calls == ["main-model", "second-model", "third-model"]  # one try each
+
+
+def test_a_timeout_is_not_cached(monkeypatch, two_models):
+    fake_send(monkeypatch, [APITimeoutError("slow"), APITimeoutError("slow")])
+    with pytest.raises(llm.LLMUnavailableError):
+        llm.call_llm("prompt")
+    assert not llm.CACHE_DIR.exists() or not list(llm.CACHE_DIR.iterdir())
+
+
+@pytest.fixture
+def slow_server():
+    """A local server that takes 3 seconds to answer. Returns its address."""
+    release = threading.Event()
+
+    class Slow(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            release.wait(3)  # not time.sleep, which these tests replace with a no-op
+            try:
+                body = json.dumps({}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except OSError:
+                pass  # the client has already given up
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Slow)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_address[1]}"
+    release.set()
+    server.shutdown()
+
+
+def test_the_real_sdk_times_out_and_is_recognised(monkeypatch, slow_server):
+    """Uses the real SDK against a slow local server (no call to Google). If an SDK
+    upgrade renames its timeout error, this test fails and says so."""
+    monkeypatch.setattr(llm, "REQUEST_TIMEOUT_SECONDS", 0.5)
+    real_client = llm.genai.Client
+
+    def client_for_the_slow_server(**kwargs):
+        kwargs["http_options"] = {**kwargs["http_options"], "base_url": slow_server}
+        return real_client(**kwargs)
+
+    monkeypatch.setattr(llm.genai, "Client", client_for_the_slow_server)
+
+    started = time.monotonic()
+    with pytest.raises(llm.LLMUnavailableError, match="did not respond in time"):
+        llm.call_llm("prompt")
+    assert time.monotonic() - started < 2.5  # gave up at about 0.5s, not after the 3s answer
+
+
 # --- pacing ---
 
 
@@ -302,6 +400,7 @@ def test_request_is_built_safely(monkeypatch):
     assert FakeClient.create_args["input"] == "my prompt"
     assert FakeClient.create_args["model"] == llm.DEFAULT_MODEL
     assert FakeClient.create_args["store"] is False  # don't store syllabus text server-side
+    assert FakeClient.create_args["timeout"] == llm.REQUEST_TIMEOUT_SECONDS  # never wait forever
     assert FakeClient.create_args["response_format"]["mime_type"] == "application/json"
 
 
