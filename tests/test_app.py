@@ -133,6 +133,13 @@ def test_page_loads_with_nothing_to_do(model_calls):
     assert not at.sidebar.selectbox  # tutorial-day pickers only appear once quizzes exist
 
 
+def test_page_warns_that_the_model_can_make_mistakes(model_calls):
+    at = new_app()
+    text = " ".join(c.value for c in at.caption)
+    assert "Gemini" in text and "mistakes" in text
+    assert "double-check" in text
+
+
 def test_two_files_with_the_same_name_are_rejected(model_calls):
     at = upload(new_app(), ("syllabus.pdf", PDF_BYTES), ("syllabus.pdf", PDF_BYTES))
     assert not at.exception

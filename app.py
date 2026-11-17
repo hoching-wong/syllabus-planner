@@ -88,6 +88,10 @@ def reset_table() -> None:
 
 st.title("Syllabus Planner")
 st.write("Upload your course syllabi (PDF) to build one combined timeline.")
+st.caption(
+    "This application uses the Gemini LLM, which can make mistakes. "
+    "Always double-check the output data before exporting."
+)
 
 # --- inputs ---
 
@@ -192,6 +196,7 @@ if "table_events" in st.session_state:
         num_rows="dynamic",
         hide_index=True,
         width="stretch",
+        placeholder="",  # show empty cells as blank instead of the word "None"
         disabled=["Confidence"],  # the model's confidence isn't the user's to change
         column_config={
             "Date": st.column_config.DateColumn("Date", format="YYYY-MM-DD"),
