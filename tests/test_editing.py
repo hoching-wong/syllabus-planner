@@ -76,7 +76,7 @@ def test_rows_follow_the_sorted_order():
 
 
 def test_type_options_are_the_event_types():
-    assert TYPE_OPTIONS == ["assignment", "exam", "quiz", "project", "other"]
+    assert TYPE_OPTIONS == ["assignment", "exam", "quiz", "project", "ongoing", "other"]
 
 
 # --- rows -> events ---

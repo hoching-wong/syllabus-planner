@@ -64,6 +64,11 @@ def test_type_is_case_insensitive():
     assert make_event(type="EXAM").type == EventType.EXAM
 
 
+def test_ongoing_is_a_known_type():
+    assert make_event(type="ongoing").type == EventType.ONGOING
+    assert make_event(type="Ongoing").type == EventType.ONGOING
+
+
 def test_unknown_type_becomes_other():
     assert make_event(type="midterm thingy").type == EventType.OTHER
 

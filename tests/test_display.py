@@ -154,7 +154,7 @@ def test_no_note_when_every_event_has_a_date():
 def test_note_says_how_much_weight_has_no_date():
     workload = load_of(make_event(title="Final", due_date=None, weight_percent=40.0))
     assert unscheduled_note(workload) == (
-        "40% of your grades (1 event) has no date, so it isn't in the weekly view."
+        "40% of your grades (1 event) has no date or is ongoing, so it isn't in the weekly view."
     )
 
 

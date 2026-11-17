@@ -24,6 +24,8 @@ FIXTURES = Path(__file__).parent / "fixtures"
 SYLLABI = {
     "MAT235H1": ("MAT235H1_Syllabus.pdf", 2026),
     "EAS110Y1": ("EAS110Y1_Syllabus.pdf", 2026),
+    "GGR124H1": ("GGR124H1_Syllabus.pdf", 2026),  # winter term, so Jan-Apr dates are in 2026
+    "MAT223H1": ("MAT223H1_Syllabus.pdf", 2026),
 }
 
 

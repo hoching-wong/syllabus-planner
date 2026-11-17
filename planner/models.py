@@ -17,6 +17,7 @@ class EventType(str, Enum):
     EXAM = "exam"
     QUIZ = "quiz"
     PROJECT = "project"
+    ONGOING = "ongoing"  # one item that repeats ("weekly packets"), so it has no single date
     OTHER = "other"
 
 

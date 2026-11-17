@@ -101,7 +101,7 @@ def unscheduled_note(workload: Workload) -> str | None:
     events = "event" if count == 1 else "events"
     return (
         f"{_percent(workload.unscheduled_weight)} of your grades ({count} {events}) "
-        "has no date, so it isn't in the weekly view."
+        "has no date or is ongoing, so it isn't in the weekly view."
     )
 
 
