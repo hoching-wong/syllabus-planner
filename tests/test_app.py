@@ -89,6 +89,22 @@ def page_text(at: AppTest) -> str:
     return "\n".join(m.value for m in at.markdown)
 
 
+def picker(at: AppTest, course: str):
+    """The sidebar's tutorial-day dropdown for one course."""
+    return at.sidebar.selectbox(key=f"tutorial_day_{course}")
+
+
+def two_course_app(model_calls) -> AppTest:
+    """Two syllabi that produce the same events, under different course names."""
+    at = upload(new_app(), ("MAT235H1_Syllabus.pdf", PDF_BYTES), ("OTHER_Syllabus.pdf", PDF_BYTES))
+    return extract(at)
+
+
+def quiz_date(at: AppTest, course: str, title: str = "Quiz 1") -> date:
+    (found,) = [e for e in at.session_state["current_events"] if e.course == course and e.title == title]
+    return found.due_date
+
+
 # --- loading and extracting ---
 
 
@@ -98,6 +114,28 @@ def test_page_loads_with_nothing_to_do(model_calls):
     assert at.title[0].value == "Syllabus Planner"
     assert at.button[0].disabled  # nothing uploaded yet
     assert not at.data_editor
+    assert not at.sidebar.selectbox  # tutorial-day pickers only appear once quizzes exist
+
+
+def test_two_files_with_the_same_name_are_rejected(model_calls):
+    at = upload(new_app(), ("syllabus.pdf", PDF_BYTES), ("syllabus.pdf", PDF_BYTES))
+    assert not at.exception
+    assert any("same name" in e.value and "syllabus.pdf" in e.value for e in at.error)
+    assert at.button[0].disabled  # can't extract until the duplicate is removed
+    assert model_calls == []
+
+
+def test_removing_the_duplicate_clears_the_error(model_calls):
+    at = upload(new_app(), ("syllabus.pdf", PDF_BYTES), ("syllabus.pdf", PDF_BYTES))
+    at = upload(at, ("syllabus.pdf", PDF_BYTES))
+    assert not at.error
+    assert not at.button[0].disabled
+
+
+def test_files_with_different_names_are_fine(model_calls):
+    at = upload(new_app(), ("a_syllabus.pdf", PDF_BYTES), ("b_syllabus.pdf", PDF_BYTES))
+    assert not at.error
+    assert not at.button[0].disabled
 
 
 def test_uploading_alone_does_not_call_the_model(model_calls):
@@ -242,7 +280,7 @@ def test_tutorial_day_moves_quizzes_without_calling_the_model_again(model_calls)
     at = extracted_app(model_calls)
     assert table(at)["Date"].iloc[0] == date(2026, 9, 17)
 
-    at.sidebar.selectbox[0].select("Friday").run()
+    picker(at, "MAT235H1").select("Friday").run()
     assert not at.exception
     assert table(at)["Date"].iloc[0] == date(2026, 9, 18)  # Thursday Sep 17 -> Friday Sep 18
     assert "moved to your tutorial day (Friday)" in page_text(at)
@@ -251,7 +289,7 @@ def test_tutorial_day_moves_quizzes_without_calling_the_model_again(model_calls)
 
 def test_exams_do_not_move_with_the_tutorial_day(model_calls):
     at = extracted_app(model_calls)
-    at.sidebar.selectbox[0].select("Monday").run()
+    picker(at, "MAT235H1").select("Monday").run()
     dates = table(at)["Date"].tolist()
     assert date(2026, 10, 19) in dates and date(2026, 11, 27) in dates
 
@@ -267,14 +305,14 @@ def test_picking_a_tutorial_day_overwrites_earlier_quiz_edits_but_keeps_other_ed
     )
     assert event(at, "Quiz 1").due_date == date(2026, 9, 14)
 
-    at.sidebar.selectbox[0].select("Friday").run()  # newer action: the tutorial day wins
+    picker(at, "MAT235H1").select("Friday").run()  # newer action: the tutorial day wins
     assert event(at, "Quiz 1").due_date == date(2026, 9, 18)
     assert event(at, "Term Test 1").weight_percent == 30.0  # not a quiz, so the edit survives
 
 
 def test_a_quiz_edit_after_picking_a_tutorial_day_is_kept(model_calls):
     at = extracted_app(model_calls)
-    at.sidebar.selectbox[0].select("Friday").run()
+    picker(at, "MAT235H1").select("Friday").run()
     at = edit_table(at, edited_rows={row_of(at, "Quiz 1"): {"Date": "2026-09-16"}})  # newer action
     assert event(at, "Quiz 1").due_date == date(2026, 9, 16)
     assert event(at, "Quiz 2").due_date == date(2026, 9, 25)  # the others are still on Friday
@@ -282,9 +320,81 @@ def test_a_quiz_edit_after_picking_a_tutorial_day_is_kept(model_calls):
 
 def test_choosing_not_set_does_not_change_dates(model_calls):
     at = extracted_app(model_calls)
-    at.sidebar.selectbox[0].select("Friday").run()
-    at.sidebar.selectbox[0].select("Not set").run()
+    picker(at, "MAT235H1").select("Friday").run()
+    picker(at, "MAT235H1").select("Not set").run()
     assert event(at, "Quiz 1").due_date == date(2026, 9, 18)  # only Reset undoes the move
+
+
+# --- a separate tutorial day for each course ---
+
+
+def test_each_course_has_its_own_picker(model_calls):
+    at = two_course_app(model_calls)
+    assert [s.label for s in at.sidebar.selectbox] == ["Tutorial day for MAT235H1", "Tutorial day for OTHER"]
+
+
+def test_a_course_without_quizzes_gets_no_picker(monkeypatch):
+    reply = json.dumps({"events": [
+        {"title": "Midterm", "type": "exam", "due_date": "2026-10-19", "weight_percent": 30, "confidence": 1},
+    ]})
+    monkeypatch.setattr(extractor, "call_llm", lambda prompt: reply)
+    at = extract(upload(new_app(), ("MAT235H1_Syllabus.pdf", PDF_BYTES)))
+    assert not at.exception
+    assert not at.sidebar.selectbox
+
+
+def test_a_tutorial_day_only_moves_that_courses_quizzes(model_calls):
+    at = two_course_app(model_calls)
+    picker(at, "MAT235H1").select("Friday").run()
+    assert not at.exception
+    assert quiz_date(at, "MAT235H1") == date(2026, 9, 18)
+    assert quiz_date(at, "OTHER") == date(2026, 9, 17)  # the other course is untouched
+
+
+def test_different_courses_can_have_different_days(model_calls):
+    at = two_course_app(model_calls)
+    picker(at, "MAT235H1").select("Friday").run()
+    picker(at, "OTHER").select("Monday").run()
+    assert quiz_date(at, "MAT235H1") == date(2026, 9, 18)
+    assert quiz_date(at, "OTHER") == date(2026, 9, 14)
+
+
+def test_picking_a_day_for_one_course_keeps_edits_to_another(model_calls):
+    at = two_course_app(model_calls)
+    rows = table(at)
+    other_quiz = int(rows.index[(rows["Course"] == "OTHER") & (rows["Title"] == "Quiz 1")][0])
+    at = edit_table(at, edited_rows={other_quiz: {"Date": "2026-09-15"}})
+
+    picker(at, "MAT235H1").select("Friday").run()  # newest action, but for a different course
+    assert quiz_date(at, "OTHER") == date(2026, 9, 15)  # the edit survives
+    assert quiz_date(at, "MAT235H1") == date(2026, 9, 18)
+
+
+def test_quiz_notes_are_per_course(model_calls):
+    at = two_course_app(model_calls)
+    picker(at, "MAT235H1").select("Friday").run()
+    text = page_text(at)
+    assert "MAT235H1: quiz dates were moved to your tutorial day (Friday)." in text
+    assert "OTHER: quiz dates are the syllabus's nominal day" in text
+
+
+def test_chosen_days_still_apply_when_extracting_again(model_calls):
+    at = two_course_app(model_calls)
+    picker(at, "MAT235H1").select("Friday").run()
+    at = extract(at)  # extract a second time with the pickers already set
+    assert quiz_date(at, "MAT235H1") == date(2026, 9, 18)
+    assert quiz_date(at, "OTHER") == date(2026, 9, 17)
+
+
+def test_reset_clears_every_picker(model_calls):
+    at = two_course_app(model_calls)
+    picker(at, "MAT235H1").select("Friday").run()
+    picker(at, "OTHER").select("Monday").run()
+    at = click(at, "Reset to extracted values")
+    assert picker(at, "MAT235H1").value == "Not set"
+    assert picker(at, "OTHER").value == "Not set"
+    assert quiz_date(at, "MAT235H1") == date(2026, 9, 17)
+    assert quiz_date(at, "OTHER") == date(2026, 9, 17)
 
 
 # --- reset ---
@@ -297,12 +407,12 @@ def test_reset_restores_the_extracted_events_and_clears_the_tutorial_day(model_c
         edited_rows={row_of(at, "Term Test 1"): {"Weight": 30.0}},
         deleted_rows=[row_of(at, "Quiz 8")],
     )
-    at.sidebar.selectbox[0].select("Friday").run()
+    picker(at, "MAT235H1").select("Friday").run()
     assert len(at.session_state["current_events"]) == 10
 
     at = click(at, "Reset to extracted values")
     assert not at.exception
-    assert at.sidebar.selectbox[0].value == "Not set"
+    assert picker(at, "MAT235H1").value == "Not set"
     assert len(at.session_state["current_events"]) == 11
     assert event(at, "Term Test 1").weight_percent == 22.5
     assert event(at, "Quiz 1").due_date == date(2026, 9, 17)  # the syllabus's own date again

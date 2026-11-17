@@ -2,7 +2,7 @@ from datetime import date
 
 import pytest
 
-from planner.display import default_course_name, review_notes
+from planner.display import default_course_name, duplicate_names, review_notes
 from planner.models import Event
 
 
@@ -72,16 +72,45 @@ def test_notes_follow_date_order():
     assert [n.split(":")[0] for n in notes] == ["CS101 – Early", "CS101 – Late"]
 
 
-def test_dated_quizzes_get_one_general_note_not_one_each():
+def test_dated_quizzes_get_one_note_per_course_not_one_each():
     quizzes = [make_event(title=f"Quiz {i}", type="quiz") for i in (1, 2, 3)]
     (note,) = review_notes(quizzes)
-    assert "tutorial day" in note and "sidebar" in note
+    assert note.startswith("CS101:") and "tutorial day" in note and "sidebar" in note
 
 
 def test_quiz_note_names_the_chosen_day():
-    (note,) = review_notes([make_event(type="quiz")], tutorial_day="Friday")
-    assert "moved to your tutorial day (Friday)" in note
-    assert "sidebar" not in note
+    (note,) = review_notes([make_event(type="quiz")], tutorial_days={"CS101": "Friday"})
+    assert note == "CS101: quiz dates were moved to your tutorial day (Friday)."
+
+
+def test_each_course_gets_its_own_quiz_note():
+    events = [make_event(course="CS101", type="quiz"), make_event(course="BIO200", type="quiz")]
+    notes = review_notes(events, tutorial_days={"CS101": "Monday"})
+    assert notes == [
+        "BIO200: quiz dates are the syllabus's nominal day. "
+        "Set your tutorial day in the sidebar if yours is different.",
+        "CS101: quiz dates were moved to your tutorial day (Monday).",
+    ]
+
+
+# --- duplicate_names: stop two uploads from having the same file name ---
+
+
+def test_unique_names_have_no_duplicates():
+    assert duplicate_names(["a.pdf", "b.pdf"]) == []
+    assert duplicate_names([]) == []
+
+
+def test_repeated_name_is_reported_once():
+    assert duplicate_names(["a.pdf", "b.pdf", "a.pdf", "a.pdf"]) == ["a.pdf"]
+
+
+def test_several_duplicates_are_all_reported():
+    assert duplicate_names(["a.pdf", "b.pdf", "b.pdf", "a.pdf"]) == ["b.pdf", "a.pdf"]
+
+
+def test_names_that_differ_only_by_case_are_different():
+    assert duplicate_names(["a.pdf", "A.pdf"]) == []
 
 
 def test_undated_quiz_gets_no_tutorial_note():
