@@ -37,7 +37,10 @@ Return a JSON object: {{"events": [ ... ]}}. Each event has:
 
 Rules:
 - Include graded items and exams that have a date or a weight.
-- If a date has no year, use {default_year}.
+- The term starts in {default_year}. If a date has no year, use {default_year},
+  with one exception: if the term starts in the fall (September to December),
+  dates in January to April are in {default_year + 1}, because the term runs
+  into the new year.
 - If the exact day is uncertain (the syllabus only gives a week, or the day
   differs by section, like tutorials), use the Monday of that week as the date
   and set confidence to 0.5 or lower.

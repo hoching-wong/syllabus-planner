@@ -22,17 +22,33 @@ from planner.llm import LLMError
 ROOT = Path(__file__).parent.parent
 FIXTURES = ROOT / "tests" / "fixtures"
 PDF_BYTES = (FIXTURES / "MAT235H1_Syllabus.pdf").read_bytes()
-RECORDED_REPLY = json.loads((FIXTURES / "MAT235H1_recorded_reply.json").read_text(encoding="utf-8"))["reply"]
+
+# A fixed fake model reply, written out here so these UI tests never change when
+# the real model's wording changes (the accuracy tests cover the real model's output).
+QUIZ_DATES = ["2026-09-17", "2026-09-24", "2026-10-01", "2026-10-08", "2026-11-05", "2026-11-12", "2026-11-19", "2026-12-03"]
+CANNED_REPLY = json.dumps(
+    {
+        "events": [
+            {"title": f"Quiz {n}", "type": "quiz", "due_date": day, "weight_percent": 2.5, "confidence": 1}
+            for n, day in enumerate(QUIZ_DATES, start=1)
+        ]
+        + [
+            {"title": "Term Test 1", "type": "exam", "due_date": "2026-10-19", "weight_percent": 22.5, "confidence": 1},
+            {"title": "Term Test 2", "type": "exam", "due_date": "2026-11-27", "weight_percent": 22.5, "confidence": 1},
+            {"title": "Final Exam", "type": "exam", "due_date": None, "weight_percent": 40, "confidence": 1},
+        ]
+    }
+)
 
 
 @pytest.fixture
 def model_calls(monkeypatch) -> list[str]:
-    """Fake the model with the recorded real reply. Returns the prompts it was sent."""
+    """Fake the model with the canned reply. Returns the prompts it was sent."""
     prompts: list[str] = []
 
     def fake_call_llm(prompt: str) -> str:
         prompts.append(prompt)
-        return RECORDED_REPLY
+        return CANNED_REPLY
 
     monkeypatch.setattr(extractor, "call_llm", fake_call_llm)
     return prompts

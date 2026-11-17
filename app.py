@@ -103,7 +103,7 @@ if duplicates:
     )
 
 year = st.number_input(
-    "Term year (used when a date in a syllabus has no year)",
+    "Year the term starts (used when a date in a syllabus has no year)",
     min_value=2000,
     max_value=2100,
     value=date.today().year,

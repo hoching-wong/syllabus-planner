@@ -139,6 +139,14 @@ def test_prompt_contains_the_syllabus_text_and_year(monkeypatch):
     assert "2031" in prompts[0]
 
 
+def test_prompt_tells_the_model_a_fall_term_runs_into_the_next_year(monkeypatch):
+    prompts = fake_llm(monkeypatch, reply_with())
+    extract_events("text", course="CS101", default_year=2031)
+    prompt = prompts[0]
+    assert "starts in 2031" in prompt
+    assert "January to April are in 2032" in prompt  # next year, worked out from the term year
+
+
 def test_year_defaults_to_the_current_year(monkeypatch):
     prompts = fake_llm(monkeypatch, reply_with())
     extract_events("text", course="CS101")
